@@ -73,6 +73,7 @@ class RequiredAbilities(Enum):
     task_evaluator = 3
     summarization = 4
     reflection = 5
+    plan_interact_db = 6
 
 
 @dataclass

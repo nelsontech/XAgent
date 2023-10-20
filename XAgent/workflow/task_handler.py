@@ -5,7 +5,7 @@ from typing import Dict, List
 from colorama import Fore
 
 # , working_memory_agent, vector_db_interface
-from XAgent.global_vars import agent_dispatcher
+from XAgent.global_vars import agent_dispatcher, vector_db_interface
 from XAgent.inner_loop_search_algorithms.ReACT import ReACTChainSearch
 from XAgent.loggers.logs import logger, print_task_save_items
 from XAgent.running_recorder import recorder
@@ -21,6 +21,9 @@ from XAgentServer.interaction import XAgentInteraction
 from XAgentServer.models.ws import XAgentOutputData
 
 from .working_memory import working_memory_agent
+from .insert_records import post_process_plan_insert
+
+import yaml
 
 
 class TaskHandler():
@@ -46,6 +49,26 @@ class TaskHandler():
 
         self.interaction = interaction
 
+    def load_yaml_to_plan(self, path):
+        try:
+            with open(path, 'r') as yaml_file:
+                yaml_data = yaml.safe_load(yaml_file)
+                subtasks = yaml_data["subtasks"]
+                for subtask in subtasks:
+                    assert subtask["subtask name"] != None
+                    assert subtask["goal"]["goal"] != None
+                    if subtask["milestones"] == None:
+                        subtask["milestones"] = []
+                    if subtask["goal"]["criticsim"] == None:
+                        subtask["goal"]["criticsim"] = "N/A"
+            return yaml_data
+        except FileNotFoundError:
+            print("In load yaml plan: File not found.")
+            return None
+        except Exception as e:
+            print(f"In load yaml plan: An error occurred: {str(e)}")
+            return None
+    
     def outer_loop(self):
         logger.typewriter_log(
             f"-=-=-=-=-=-=-= BEGIN QUERY SOVLING -=-=-=-=-=-=-=",
@@ -94,7 +117,19 @@ class TaskHandler():
         )
         self.query.log_self()
 
-        self.plan_agent.initial_plan_generation()
+        if self.config.outer_loop_init_file != None:
+            init_plan = self.load_yaml_to_plan(self.config.outer_loop_init_file)
+        
+        print("this is the initial plan")
+        print(init_plan)
+        initial_subtasks = self.plan_agent.initial_plan_generation(init_plan)
+        
+        print(json.dumps(self.plan_agent.latest_plan.to_json(), indent=2, ensure_ascii=False))
+        print(json.dumps(initial_subtasks, indent=2, ensure_ascii=False))
+        
+        # if self_evole is open
+        if self.config.enable_self_evolve:
+            self.plan_agent.plan_iterate_based_on_memory_system(initial_subtasks)
 
         print(summarize_plan(self.plan_agent.latest_plan.to_json()))
 
@@ -118,9 +153,6 @@ class TaskHandler():
             "tool_budget": print_data.get("tool_budget", ""),
             "subtasks": print_data.get("subtask", [])
         }, status="start", current=print_data.get("task_id", ""))
-
-
-        self.plan_agent.plan_iterate_based_on_memory_system()
 
         def rewrite_input_func(old, new):
             if not isinstance(new, dict):
@@ -195,6 +227,11 @@ class TaskHandler():
 
                 await self.interaction.update_cache(update_data=subtask_list, status="subtask", current=current_task_id)
 
+        # The last step of outer loop: insert the record into DB in a online manner
+        if self.config.enable_self_evolve:
+            final_plan = self.plan_agent.plan.to_json()
+            post_process_plan_insert(final_plan)
+        
         logger.typewriter_log("ALL Tasks Done", Fore.GREEN)
         return
 

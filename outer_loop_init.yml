@@ -1,0 +1,15 @@
+goal: Given a positive integer n, prove that  there are infinitely many prime numbers p such that p-1 is divisable by n. Write your proof in a report.
+subtasks:
+  - subtask name: Gather Information
+    goal: 
+      goal: Collect detailed information about the latest models of Tesla, Ford
+      criticsim: The information may be not available
+    milestones:
+      - Identify relevant mathematical theories or concepts
+      - Establish understanding of connections between prime numbers and divisibility
+      - Create a knowledge base for the mathematical proof
+  - subtask name: Proof Plan
+    goal: 
+      goal: Develop a concrete proof plan to demonstrate there are infinitely many primes p such that p-1 is divisible by n
+      criticsim:
+    milestones:

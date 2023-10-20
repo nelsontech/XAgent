@@ -441,7 +441,9 @@ class FunctionHandler():
             tool_output_status_code = ToolCallStatusCode.SUBMIT_AS_SUCCESS
         else:
             tool_output_status_code = ToolCallStatusCode.SUBMIT_AS_FAILED
-        if arguments["suggestions_for_latter_subtasks_plan"]["need_for_plan_refine"]:
+        # We only want to refine plan when the task is submitted as failed
+        if tool_output_status_code == ToolCallStatusCode.SUBMIT_AS_FAILED and \
+            arguments["suggestions_for_latter_subtasks_plan"]["need_for_plan_refine"]:
             plan_refine = True
         answer = {
             "content": f"you have successfully submit the subtask as {arguments['submit_type']}"

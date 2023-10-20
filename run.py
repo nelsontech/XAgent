@@ -8,7 +8,7 @@ from command import CommandLine,XAgentServerEnv
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str,
-                        help="task description",required=True)
+                        help="task description", default=None)
     parser.add_argument("--upload_files", nargs='+',
                         help="upload files")
     parser.add_argument("--model", type=str, default=None,)
@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument("--max_plan_tree_width", type=int, default=7)
     parser.add_argument("--max_retry_times", type=int, default=3)
     parser.add_argument("--config_file",type=str,default="config.yml")
+    parser.add_argument("--enable_self_evolve", action="store_true",default=False)
+    parser.add_argument("--outer_loop_init_file",type=str,default="outer_loop_init.yml")
 
     args = parser.parse_args()
     return args
@@ -39,7 +41,18 @@ if __name__ == '__main__':
     CONFIG.max_plan_tree_depth = args.max_plan_tree_depth
     CONFIG.max_plan_tree_width = args.max_plan_tree_width
     CONFIG.max_retry_times = args.max_retry_times   
+    CONFIG.enable_self_evolve = args.enable_self_evolve
+    CONFIG.outer_loop_init_file = args.outer_loop_init_file
     
+    # Task goal could be from the yaml file
+    if CONFIG.outer_loop_init_file != None:
+        import yaml
+        yaml_data = yaml.safe_load(open(CONFIG.outer_loop_init_file, "r"))
+        task = yaml_data["goal"]
+        args.task = task
+    if args.task == None:
+        raise Exception("The task goal is not defined anywhere!")
+            
     cmd = CommandLine(XAgentServerEnv)
     if args.quiet:
         original_stdout = sys.stdout

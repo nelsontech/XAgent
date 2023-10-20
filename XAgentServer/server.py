@@ -21,7 +21,7 @@ class XAgentServer:
     async def interact(self, interaction: XAgentInteraction):
         # query = message
         from XAgent.agent import (PlanGenerateAgent, PlanRefineAgent,
-                                  ReflectAgent, ToolAgent)
+                                  ReflectAgent, ToolAgent, PlanReferDBAgent)
         from XAgent.config import CONFIG as config
         from XAgent.global_vars import agent_dispatcher, config
         from XAgent.running_recorder import recorder
@@ -65,13 +65,13 @@ class XAgentServer:
 
         # working memory function is used for communication between different agents that handle different subtasks
         working_memory_function = WorkingMemoryAgent.get_working_memory_function()
-        subtask_functions, tool_functions_description_list = function_handler.get_functions(
-            config)
+        subtask_functions, tool_functions_description_list = [], [] # function_handler.get_functions(config)
 
         all_functions = subtask_functions + working_memory_function
 
         avaliable_agents = [
             PlanGenerateAgent,
+            PlanReferDBAgent,
             PlanRefineAgent,
             ToolAgent,
             ReflectAgent,

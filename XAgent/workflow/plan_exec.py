@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from XAgent.loggers.logs import logger
 from XAgent.workflow.base_query import BaseQuery
-from XAgent.global_vars import agent_dispatcher
+from XAgent.global_vars import agent_dispatcher, vector_db_interface
 from XAgent.utils import TaskSaveItem, RequiredAbilities, PlanOperationStatusCode, TaskStatusCode
 from XAgent.message_history import Message
 from XAgent.data_structure.plan import Plan
@@ -16,11 +16,113 @@ from XAgent.running_recorder import recorder
 from XAgent.tool_call_handle import toolserver_interface
 from XAgent.agent.summarize import summarize_plan
 from XAgent.config import CONFIG
+
 def plan_function_output_parser(function_output_item: dict) -> Plan:
     subtask_node = TaskSaveItem()
     subtask_node.load_from_json(function_output_item=function_output_item)
     subplan = Plan(subtask_node)
     return subplan
+
+
+def flatten_tree(root):
+    leaf_nodes:List[dict] = []
+
+    def traverse(node):
+        if "subtask" in node:
+            for subtask_node in node["subtask"]:
+                traverse(subtask_node)
+        else:
+            leaf_nodes.append(node)
+
+    traverse(root)
+    for leaf in leaf_nodes:
+        if 'tool_call_process' in leaf:
+            leaf.pop("tool_call_process")
+    return leaf_nodes
+
+
+def change_db_retrieve_to_reference(query):
+    res = vector_db_interface.search_similar_sentences(query, "whole_workflow")
+    res = json.loads(res["matches"][0]["metadata"]["text"])
+
+    # flatten the tree to get all the leaves
+    wanted_res = flatten_tree(res)
+    # Maintain the original tree but only use the first level
+    # wanted_res = res["subtask"]
+    
+    ref_plan = {"query": res["goal"], 'task_id': "1"}
+    # begin to handle subtask
+    sub_plans = []
+    cur_id = 0
+    for subtask in wanted_res:
+        cur_id += 1
+        # Typo in "execute"!
+        status = "FAIL" if subtask["exceute_status"] == "SPLIT" else subtask["exceute_status"]
+        status = "UNKNOWN" if status != "SUCCESS" and status != "FAIL" else status
+        sub_plan = {"subtask name": subtask["name"], "goal": {"goal": subtask["goal"], "criticsim": subtask["prior_plan_criticsim"]}, "milestones": subtask["milestones"], "task_id": f"1.{cur_id}", "execute_status": status, "suggestion": "N/A"}
+        if status == "SUCCESS":
+            sub_plan["suggestion"] = "This subtask and milestones are resonable and could be successfully achieved. You can take this subtask as reference."
+        elif "submit_result" in subtask:
+            sub_plan["suggestion"] = subtask["submit_result"]["args"]["suggestions_for_latter_subtasks_plan"]["reason"]
+        sub_plans.append(sub_plan)
+    # Add the subplans finally as reference
+    ref_plan["subtasks"] = sub_plans
+
+    return json.dumps(ref_plan, indent=2, ensure_ascii=False)
+
+
+def refine_db_retrieve_to_reference(goal):
+    res = vector_db_interface.search_similar_sentences(goal, "workflow")
+    res = json.loads(res["matches"][0]["metadata"]["text"])
+
+    # flatten the tree to get all the leaves
+    wanted_res = flatten_tree(res)
+    # Maintain the original tree but only use the first level
+    # wanted_res = res["subtask"]
+    
+    ref_plan = {"reference_task_name": res["name"], "reference_task_goal": res["goal"], 'task_id': "1"}
+
+    # begin to handle subtask (same process)
+    sub_plans = []
+    cur_id = 0
+    for subtask in wanted_res:
+        cur_id += 1
+        # Typo in "execute"!
+        status = "FAIL" if subtask["exceute_status"] == "SPLIT" else subtask["exceute_status"]
+        status = "UNKNOWN" if status != "SUCCESS" and status != "FAIL" else status
+        sub_plan = {"subtask name": subtask["name"], "goal": {"goal": subtask["goal"], "criticsim": subtask["prior_plan_criticsim"]}, "milestones": subtask["milestones"], "task_id": f"1.{cur_id}", "execute_status": status, "suggestion": "N/A"}
+        if status == "SUCCESS":
+            sub_plan["suggestion"] = "This subtask and milestones are resonable and could be successfully achieved. You can take this subtask as reference."
+        elif "submit_result" in subtask:
+            sub_plan["suggestion"] = subtask["submit_result"]["args"]["suggestions_for_latter_subtasks_plan"]["reason"]
+        sub_plans.append(sub_plan)
+    # Add the subplans finally as reference
+    ref_plan["subtasks"] = sub_plans
+
+    return json.dumps(ref_plan, indent=2, ensure_ascii=False)
+
+
+def get_additional_msg_from_retrieve(now_dealing_task: Plan, ultimate_goal):
+    # Need to choose from here whether current level goal or a upper level goal is wanted
+    cur_level_goal = now_dealing_task.data.goal
+    father_level_goal = now_dealing_task.father.data.goal
+    cur_ref_plan = refine_db_retrieve_to_reference(cur_level_goal)
+    father_ref_plan = refine_db_retrieve_to_reference(father_level_goal)
+    
+    # Get the submit results, it should be a FAILED task
+    fail_conclusion = now_dealing_task.to_json()["submit_result"]["args"]["result"]["conclusion"]
+    suggestion = now_dealing_task.to_json()["submit_result"]["args"]["suggestions_for_latter_subtasks_plan"]["reason"]
+    fail_task_id = now_dealing_task.to_json()["task_id"]
+    fail_task_name = now_dealing_task.to_json()["name"]
+    fail_task_goal = now_dealing_task.to_json()["goal"]
+            
+    summary = json.dumps({"fail_task_id": fail_task_id, "fail_task_name": fail_task_name, "fail_task_goal": fail_task_goal, "conclusion": fail_conclusion, "suggestion_for_refine": suggestion}, indent=2, ensure_ascii=False)
+            
+    goals = json.dumps({"current_goal(just failed)": cur_level_goal, "parent_goal(local goal)": father_level_goal, "ultimate_goal": ultimate_goal}, indent=2, ensure_ascii=False)
+            
+    additional_message = Message("user", f"You have just failed the task {fail_task_id}. I have summarized the failed task and corresponding suggestions for you:\n{summary}\nI have also summarized the goals for you:\n{goals}\nTo successfully achieve the ultimate goal, you now need to refine your local plan.\n\n--- Reference Plans ---\nI will now give you some reference from database to help you make plan refinement.\n1. The following reference task's goal is similar to your current goal. You can refer to this task's plan to help the refinement if you still want to tackle the current goal by through SPLIT:\n{cur_ref_plan}\n2. The following reference task's goal is similar to your parent's goal. You can refer to this task's plan to help the refinement if you still want to jump out of current goal and tackle the parent's goal in a new way through ADD and DELETE:\n{father_ref_plan}\n\n--- Refinement Suggestions ---\nThere are typically two ways to tackle a failed situation\n1. If you think the current goal is very important and must be done in order to successfully complete the parent's goal and the ultimate goal, then you can SPLIT the current task {fail_task_id} into multiple subtasks and handle them again.\n2. If you think you have fallen to a dead end and the current goal is unreachable, you can ADD subtask and input the target task id {fail_task_id}, which will make your plan inserted as {str(fail_task_id)[:-1]+str(int(fail_task_id[-1])+1)}, and then DELETE some later subtasks that you think are unnecessary. This choice indicates you want to try a brand new way to solve the parent's goal, instead of focusing on the current task.\n\nAlways remember your ultimate goal. Please also refer to the plans if they are useful or inspirational. When refining the plan, avoid devising subtasks that are likely to FAIL, observe what subtasks are more likely to SUCCESS, and learn from suggestions.")
+
+    return additional_message
 
 
 class PlanRefineChain():
@@ -93,12 +195,29 @@ class PlanAgent():
         self.refine_chains: List[PlanRefineChain] = []
 
 
-    def initial_plan_generation(self):
-        logger.typewriter_log(
-            f"-=-=-=-=-=-=-= GENERATE INITIAL_PLAN -=-=-=-=-=-=-=",
+    def initial_plan_generation(self, init_plan):
+        if init_plan == None:
+            logger.typewriter_log(
+                f"-=-=-=-=-=-=-= GENERATE INITIAL_PLAN -=-=-=-=-=-=-=",
+                Fore.GREEN,
+                "",
+            )
+        else:
+            logger.typewriter_log(
+            f"-=-=-=-=-=-=-= INITIAL_PLAN AlREADY GIVEN IN YAML-=-=-=-=-=-=-=",
             Fore.GREEN,
             "",
         )
+        
+        # If there's initial plan given by the user
+        if init_plan != None and "subtasks" in init_plan:
+            subtasks = init_plan["subtasks"]
+            # Add a switch, register like this if there's no evolve
+            if not self.config.enable_self_evolve:
+                for subtask_item in subtasks:
+                    subplan = plan_function_output_parser(subtask_item)
+                    Plan.make_relation(self.plan, subplan)
+            return subtasks
 
 
         split_functions = deepcopy(function_manager.get_function_schema('subtask_split_operation'))
@@ -127,29 +246,76 @@ class PlanAgent():
         
         subtasks = json5.loads(new_message["function_call"]["arguments"])
 
+        # Add a switch, register like this if there's no evolve
+        if not self.config.enable_self_evolve:
+            for subtask_item in subtasks["subtasks"]:
+                subplan = plan_function_output_parser(subtask_item)
+                Plan.make_relation(self.plan, subplan)
+        
+        return subtasks
+
+    def plan_iterate_based_on_memory_system(self, initial_subtasks):
+        # Prepare the format of previous 
+        subtask_cnt = 1
+        for subtask in initial_subtasks["subtasks"]:
+            subtask["task_id"] = f"1.{subtask_cnt}"
+            subtask_cnt += 1
+        previous_plan = {"query": self.query.task, "thought": initial_subtasks["thought"], 'target_subtask_id': "1", 'subtasks': initial_subtasks['subtasks']}
+        previous_plan = json.dumps(previous_plan, indent=2, ensure_ascii=False)
+        logger.typewriter_log(
+            f"-=-=-=-=-=-=-= REFINE PLAN BASED ON MEMORY SYSTEM -=-=-=-=-=-=-=",
+            Fore.BLUE,
+        )
+        
+        split_functions = deepcopy(function_manager.get_function_schema('subtask_split_operation'))
+        
+        agent = agent_dispatcher.dispatch(
+            RequiredAbilities.plan_interact_db,
+            target_task=f"Generate a plan to accomplish the task: {self.query.task}", # useless when enable=False
+        )
+        
+        ref_plan = change_db_retrieve_to_reference(self.query.task)
+        
+        # Retrieve from the database
+        _, new_message , _ = agent.parse(
+            placeholders={
+                "system": {
+                    "db_plans": ref_plan,
+                    "previous_plan": previous_plan
+                },
+                "user": {
+                    "query": self.plan.data.raw
+                }
+            },
+            functions=[split_functions], 
+            function_call={"name":"subtask_split_operation"},
+        )
+        
+        subtasks = json5.loads(new_message["function_call"]["arguments"])
+
         for subtask_item in subtasks["subtasks"]:
             subplan = plan_function_output_parser(subtask_item)
             Plan.make_relation(self.plan, subplan)
-
-    def plan_iterate_based_on_memory_system(self):
-        logger.typewriter_log(
-            f"-=-=-=-=-=-=-= ITERATIVELY REFINE PLAN BASED ON MEMORY SYSTEM -=-=-=-=-=-=-=",
-            Fore.BLUE,
-        )
-        print("Not Implemented, skip")
-        # TODO
+    
 
     @property
     def latest_plan(self):
         return self.plan
 
     def plan_refine_mode(self, now_dealing_task: Plan):
+        # We should only refine plan when the current task fails! (we disregard the max_tool_call situation)
+        assert now_dealing_task.to_json()['exceute_status'] == "FAIL"
+        
         logger.typewriter_log(
             f"-=-=-=-=-=-=-= ITERATIVELY REFINE PLAN BASED ON TASK AGENT SUGGESTIONS -=-=-=-=-=-=-=",
             Fore.BLUE,
         )
 
-        self.refine_chains.append(PlanRefineChain(self.plan)) 
+        if not self.config.enable_self_evolve:
+            self.refine_chains.append(PlanRefineChain(self.plan))
+        else:
+            # Prompt里保留当前task父节点下的所有孩子的这样一颗子树
+            self.refine_chains.append(PlanRefineChain(now_dealing_task.father))
 
         modify_steps = 0
         max_step = self.config.max_plan_refine_chain_length
@@ -184,7 +350,11 @@ class PlanAgent():
             # print(message_list)
             try_times = 0
 
-
+            if self.config.enable_self_evolve:
+                # Get the additional message by retrieving from DB
+                new_additional_message = get_additional_msg_from_retrieve(now_dealing_task, self.plan.data.goal)
+                additional_message_list.append(new_additional_message)
+            
             while True:
                 _,new_message , _ = agent.parse(
                     placeholders={
@@ -239,11 +409,12 @@ class PlanAgent():
             
             if "error" not in function_output:
                 flag_changed = True
-
+            
             self.refine_chains[-1].register(function_name=function_name,
                                             function_input=function_input,
                                             function_output=function_output,
-                                            new_plan=self.plan)
+                                            # If in refine modify mode, only the father task will be modified
+                                            new_plan=now_dealing_task.father if self.config.enable_self_evolve else self.plan)
 
             if output_status_code == PlanOperationStatusCode.MODIFY_SUCCESS:
                 color = Fore.GREEN

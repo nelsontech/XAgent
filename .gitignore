@@ -29,4 +29,7 @@ local_workspace/**
 sync.py
 assets/private.yml
 
+secrets.txt
+build/
+
 XAgentWeb/src/api/backend.ts

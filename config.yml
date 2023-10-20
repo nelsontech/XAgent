@@ -1,9 +1,9 @@
 openai_keys:
   gpt-3.5-turbo-16k:
-    - api_key: sk-xxxxx
+    - api_key: XXX
       api_base: https://example.com
       api_type: azure
-      api_version: 2023-07-01-preview
+      api_version: XXX
       engine: GPT-35-Turbo-16k
       # you can use any kwargs supported by openai.ChatCompletion here
     - api_key: sk-xxxxx
@@ -17,12 +17,11 @@ openai_keys:
       organization: org-xxxxxx
       model: gpt-4
   gpt-4-32k:
-    - api_key: sk-xxxxx
-      organization: org-xxxxx
-      model: gpt-4-32k
-    - api_key: sk-xxxxx
-      organization: org-xxxxxx
-      model: gpt-4-32k
+    - api_key: XXX
+      api_base: XXX
+      api_type: XXX
+      api_version: XXX
+      engine: gpt4-32
 
 default_completion_kwargs:
   model: gpt-4-32k
@@ -47,3 +46,4 @@ max_plan_length: 8192
 rapidapi_retrieve_tool_count: 0
 
 enable_ask_human_for_help: False
+enable_self_evolve: False
