@@ -65,7 +65,7 @@ class XAgentServer:
 
         # working memory function is used for communication between different agents that handle different subtasks
         working_memory_function = WorkingMemoryAgent.get_working_memory_function()
-        subtask_functions, tool_functions_description_list = [], [] # function_handler.get_functions(config)
+        subtask_functions, tool_functions_description_list = function_handler.get_functions(config)
 
         all_functions = subtask_functions + working_memory_function
 
