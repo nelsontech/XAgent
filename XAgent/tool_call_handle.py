@@ -334,7 +334,7 @@ class FunctionHandler():
             pass
         return result
 
-    def handle_tool_call(self, node: ToolNode, task_handler):
+    def handle_tool_call(self, node: ToolNode, task_handler=None):
         plan_refine = False
         command_name = node.data["command"]["properties"]["name"]
         arguments = node.data["command"]["properties"]["args"]

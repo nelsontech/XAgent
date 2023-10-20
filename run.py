@@ -25,7 +25,9 @@ def parse_args():
     parser.add_argument("--max_retry_times", type=int, default=3)
     parser.add_argument("--config_file",type=str,default="config.yml")
     parser.add_argument("--enable_self_evolve", action="store_true",default=False)
+    parser.add_argument("--enable_self_evolve_inner_loop", action="store_true",default=False)
     parser.add_argument("--outer_loop_init_file",type=str,default="outer_loop_init.yml")
+    parser.add_argument("--inner_loop_init_file",type=str,default="inner_loop_init.yml")
 
     args = parser.parse_args()
     return args
@@ -42,7 +44,9 @@ if __name__ == '__main__':
     CONFIG.max_plan_tree_width = args.max_plan_tree_width
     CONFIG.max_retry_times = args.max_retry_times   
     CONFIG.enable_self_evolve = args.enable_self_evolve
+    CONFIG.enable_self_evolve_inner_loop = args.enable_self_evolve_inner_loop
     CONFIG.outer_loop_init_file = args.outer_loop_init_file
+    CONFIG.inner_loop_init_file = args.inner_loop_init_file
     
     # Task goal could be from the yaml file
     if CONFIG.outer_loop_init_file != None:

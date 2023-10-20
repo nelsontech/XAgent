@@ -333,7 +333,8 @@ class TaskHandler():
                                           self.config.enable_ask_human_for_help),
                                       tool_functions_description_list=function_handler.avaliable_tools_description_list +
                                       rapidapi_tool_jsons,
-                                      task_id=task_ids_str)
+                                      task_id=task_ids_str,
+                                      toolserver_interface=toolserver_interface)
 
         if search_method.status == SearchMethodStatusCode.SUCCESS:
             plan.data.status = TaskStatusCode.SUCCESS

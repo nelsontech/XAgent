@@ -47,3 +47,4 @@ rapidapi_retrieve_tool_count: 0
 
 enable_ask_human_for_help: False
 enable_self_evolve: False
+enable_self_evolve_inner_loop: False

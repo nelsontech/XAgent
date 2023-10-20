@@ -1,3 +1,4 @@
+import yaml
 import json
 from copy import deepcopy
 
@@ -13,13 +14,15 @@ from XAgent.message_history import Message
 from XAgent.tool_call_handle import function_handler, toolserver_interface
 from XAgent.utils import SearchMethodStatusCode, ToolCallStatusCode
 from XAgent.data_structure.plan import Plan
+from XAgent.global_vars import vector_db_interface
+from XAgent.inner_loop_search_algorithms.workflow import InnerWorkFlow
 NOW_SUBTASK_PROMPT = '''
 
 '''
 
 
 def make_message(now_node: ToolNode, task_handler, max_length, config):
-    if CONFIG.enable_summary:
+    if config.enable_summary:
         terminal_task_info = summarize_plan(
             task_handler.now_dealing_task.to_json())
     else:
@@ -41,6 +44,18 @@ def make_message(now_node: ToolNode, task_handler, max_length, config):
     message_sequence.append(Message("user", user_prompt))
     return message_sequence
 
+def make_workflow_key_sentence(placeholders: dict, tool_functions_description_list: list, message_sequence: list) -> str:
+    key_sentence = ""
+    key_sentence += f"Plan Overview: {placeholders['system']['all_plan']}\n"
+    avaliable_tools = ", ".join([tool_dict['name'] for tool_dict in tool_functions_description_list])
+    key_sentence += f"Avaliable Tools: {avaliable_tools}\n"
+    key_sentence += f"Current Subtask: {placeholders['user']['subtask_id']}\n"
+    key_sentence += f"Max Tool Calls: {placeholders['user']['max_length']}\n"
+    key_sentence += f"Tool Call Step Now: {placeholders['user']['step_num']}\n"
+    for message in message_sequence:
+        message = message.raw()
+        key_sentence += f"{message['content']}\n"
+    return key_sentence
 
 class ReACTChainSearch(BaseSearchMethod):
     def __init__(self):
@@ -59,9 +74,9 @@ class ReACTChainSearch(BaseSearchMethod):
         else:
             self.status = SearchMethodStatusCode.FAIL
 
-    async def run_async(self, config, agent: BaseAgent, task_handler, function_list, tool_functions_description_list, task_id, max_try=1, max_answer=1):
+    async def run_async(self, config, agent: BaseAgent, task_handler, function_list, tool_functions_description_list, task_id, max_try=1, max_answer=1, toolserver_interface=None):
         for _attempt_id in range(max_try):
-            await self.generate_chain_async(config, agent, task_handler, function_list, tool_functions_description_list, task_id)
+            await self.generate_chain_async(config, agent, task_handler, function_list, tool_functions_description_list, task_id, toolserver_interface)
 
         if self.status == SearchMethodStatusCode.HAVE_AT_LEAST_ONE_ANSWER:
             self.status = SearchMethodStatusCode.SUCCESS
@@ -109,21 +124,56 @@ class ReACTChainSearch(BaseSearchMethod):
             else:
                 all_plan = json.dumps(all_plan, indent=2, ensure_ascii=False)
             
-            
-            LLM_code, new_message, tokens = agent.parse(
-                placeholders={
-                    "system": {
-                        "avaliable_tools": json.dumps(tool_functions_description_list, indent=2, ensure_ascii=False),
-                        "all_plan": all_plan
-                    },
-                    "user": {
-                        "workspace_files": str(file_archi)[:1000]+'`...wrapped...`' if len(str(file_archi)) > 1000 else str(file_archi),
-                        "subtask_id": task_handler.now_dealing_task.get_subtask_id(to_str=True),
-                        "max_length": config.max_subtask_chain_length,
-                        "step_num": str(now_node.get_depth() + 1),
-                        "human_help_prompt": human_prompt,
-                    }
+            if config.enable_self_evolve_inner_loop:
+                inner_yaml_data = yaml.safe_load(open(CONFIG.inner_loop_init_file, "r"))
+                # TODO: retrieve workflow
+                key_sentence = make_workflow_key_sentence(placeholders, tool_functions_description_list, message_sequence)
+                workflows = {}
+                if inner_yaml_data["use_predefined"]:
+                    workflow_pool = inner_yaml_data["predefined_workflow"]
+                else:
+                    workflow_pool = vector_db_interface.search_similar_sentences(
+                        query_sentence=key_sentence, 
+                        namespace=inner_yaml_data["namespace"], 
+                        top_k=inner_yaml_data["topk"]
+                    )
+                for workflow_id in workflow_pool:
+                    if inner_yaml_data["use_predefined"]:
+                        workflow_yml = workflow_pool[workflow_id]
+                    else:
+                        workflow_yml = json.loads(workflow_id)
+                    workflow = InnerWorkFlow(
+                        workflow_yml=workflow_yml,
+                        config=config, 
+                        tool_jsons=tool_functions_description_list, 
+                        toolserver_interface=toolserver_interface
+                    )
+                    workflow_name = workflow_yml["name"]
+                    workflows[workflow_name] = workflow
+                    
+                for workflow_name in workflows:
+                    tool_functions_description_list.append(workflows[workflow_name].workflow_json)
+                
+            placeholders = {
+                "system": {
+                    "avaliable_tools": json.dumps(tool_functions_description_list, indent=2, ensure_ascii=False),
+                    "all_plan": all_plan
                 },
+                "user": {
+                    "workspace_files": str(file_archi)[:1000]+'`...wrapped...`' if len(str(file_archi)) > 1000 else str(file_archi),
+                    "subtask_id": task_handler.now_dealing_task.get_subtask_id(to_str=True),
+                    "max_length": config.max_subtask_chain_length,
+                    "step_num": str(now_node.get_depth()+1),
+                    "human_help_prompt": human_prompt,
+                }
+            }
+            
+            if config.enable_self_evolve_inner_loop:
+                for _ in range(len(workflows)):
+                    tool_functions_description_list.pop()
+                
+            LLM_code, new_message, tokens = agent.parse(
+                placeholders=placeholders,
                 functions=function_list,
                 function_call=function_call,
                 additional_messages=message_sequence,
@@ -148,13 +198,29 @@ class ReACTChainSearch(BaseSearchMethod):
                 new_tree_node.data, False
             )
 
-            tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
-                new_tree_node, task_handler)
+            if config.enable_self_evolve_inner_loop:
+                # If name match, which means tool agent decide to use workflow, execute the workflow, otherwise run normal inner loop
+                if new_tree_node.data["command"]["properties"]["name"] == workflow.workflow_json["name"]:
+                    workflow_last_node, tool_output, tool_output_status_code, need_for_plan_refine, using_tools = workflow.run(
+                        new_tree_node, now_attempt_tree, function_handler)
+                    # TODO: choose the summary actions of the workflow or the last node's output as the tool_output
+                    # summary_actions = self.summary_actions(workflow_last_node, task_handler.now_dealing_task)
+                    # tool_output = summary_actions
+                    now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                    # TODO: shall we make tool agent see all the workflow running information? 
+                    now_node = workflow_last_node
+                else:
+                    tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
+                        new_tree_node, task_handler)
+                    now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                    now_node = new_tree_node
+            else:
+                tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
+                    new_tree_node, task_handler)
+                now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                now_node = new_tree_node
+
             self.need_for_plan_refine = need_for_plan_refine
-
-            now_attempt_tree.make_father_relation(now_node, new_tree_node)
-
-            now_node = new_tree_node
 
             if tool_output_status_code == ToolCallStatusCode.SUBMIT_AS_SUCCESS:
 
@@ -231,7 +297,7 @@ class ReACTChainSearch(BaseSearchMethod):
             # if "criticism" in args.keys() and "criticism" in old_keys.keys():
             #     old.data.criticism = args.get("criticism", old.data.thoughts.criticism)
 
-    async def generate_chain_async(self, config, agent: BaseAgent, task_handler, function_list, tool_functions_description_list, task_id):
+    async def generate_chain_async(self, config, agent: BaseAgent, task_handler, function_list, tool_functions_description_list, task_id, toolserver_interface):
         self.tree_list.append(TaskSearchTree())
         now_attempt_tree = self.tree_list[-1]
         now_node = now_attempt_tree.root
@@ -286,26 +352,62 @@ class ReACTChainSearch(BaseSearchMethod):
             else:
                 all_plan = json.dumps(all_plan, indent=2, ensure_ascii=False)
             
-            # BACK - Yujia：parse出来的结果就是要推到前端的信息
-            LLM_code, new_message, tokens = agent.parse(
-                placeholders={
-                    "system": {
-                        "avaliable_tools": json.dumps(tool_functions_description_list, indent=2, ensure_ascii=False),
-                        "all_plan": all_plan
-                    },
-                    "user": {
-                        "workspace_files": str(file_archi)[:1000]+'`...wrapped...`' if len(str(file_archi)) > 1000 else str(file_archi),
-                        "subtask_id": task_handler.now_dealing_task.get_subtask_id(to_str=True),
-                        "max_length": config.max_subtask_chain_length,
-                        "step_num": str(now_node.get_depth()+1),
-                        "human_help_prompt": human_prompt,
-                    }
+            if config.enable_self_evolve_inner_loop:
+                inner_yaml_data = yaml.safe_load(open(CONFIG.inner_loop_init_file, "r"))
+                # TODO: retrieve workflow
+                key_sentence = make_workflow_key_sentence(placeholders, tool_functions_description_list, message_sequence)
+                workflows = {}
+                if inner_yaml_data["use_predefined"]:
+                    workflow_pool = inner_yaml_data["predefined_workflow"]
+                else:
+                    workflow_pool = vector_db_interface.search_similar_sentences(
+                        query_sentence=key_sentence, 
+                        namespace=inner_yaml_data["namespace"], 
+                        top_k=inner_yaml_data["topk"]
+                    )
+                for workflow_id in workflow_pool:
+                    if inner_yaml_data["use_predefined"]:
+                        workflow_yml = workflow_pool[workflow_id]
+                    else:
+                        workflow_yml = json.loads(workflow_id)
+                    workflow = InnerWorkFlow(
+                        workflow_yml=workflow_yml,
+                        config=config, 
+                        tool_jsons=tool_functions_description_list, 
+                        toolserver_interface=toolserver_interface
+                    )
+                    workflow_name = workflow_yml["name"]
+                    workflows[workflow_name] = workflow
+                    
+                for workflow_name in workflows:
+                    tool_functions_description_list.append(workflows[workflow_name].workflow_json)
+            
+            placeholders = {
+                "system": {
+                    "avaliable_tools": json.dumps(tool_functions_description_list, indent=2, ensure_ascii=False),
+                    "all_plan": all_plan
                 },
+                "user": {
+                    "workspace_files": str(file_archi)[:1000]+'`...wrapped...`' if len(str(file_archi)) > 1000 else str(file_archi),
+                    "subtask_id": task_handler.now_dealing_task.get_subtask_id(to_str=True),
+                    "max_length": config.max_subtask_chain_length,
+                    "step_num": str(now_node.get_depth()+1),
+                    "human_help_prompt": human_prompt,
+                }
+            }
+
+            LLM_code, new_message, tokens = agent.parse(
+                placeholders=placeholders,
                 functions=function_list,
                 function_call=function_call,
                 additional_messages=message_sequence,
                 additional_insert_index=-1
             )
+
+            if config.enable_self_evolve_inner_loop:
+                for _ in range(len(workflows)):
+                    tool_functions_description_list.pop()
+
             new_tree_node = agent.message_to_tool_node(new_message)
 
             # new_tree_node.history = deepcopy(now_node.history)
@@ -325,15 +427,31 @@ class ReACTChainSearch(BaseSearchMethod):
                 new_tree_node.data, False
             )
 
-            tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
-                new_tree_node, task_handler)
+            if config.enable_self_evolve_inner_loop:
+                # If name match, which means tool agent decide to use workflow, execute the workflow, otherwise run normal inner loop
+                if new_tree_node.data["command"]["properties"]["name"] == workflow.workflow_json["name"]:
+                    workflow_last_node, tool_output, tool_output_status_code, need_for_plan_refine, using_tools = workflow.run(
+                        new_tree_node, now_attempt_tree, function_handler)
+                    # TODO: choose the summary actions of the workflow or the last node's output as the tool_output
+                    # summary_actions = self.summary_actions(workflow_last_node, task_handler.now_dealing_task)
+                    # tool_output = summary_actions
+                    now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                    # TODO: shall we make tool agent see all the workflow running information? 
+                    now_node = workflow_last_node
+                else:
+                    tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
+                        new_tree_node, task_handler)
+                    now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                    await task_handler.interaction.update_cache(update_data={**print_data, "using_tools": using_tools}, status="inner", current=task_id)
+                    now_node = new_tree_node
+            else:
+                tool_output, tool_output_status_code, need_for_plan_refine, using_tools = function_handler.handle_tool_call(
+                    new_tree_node, task_handler)
+                now_attempt_tree.make_father_relation(now_node, new_tree_node)
+                await task_handler.interaction.update_cache(update_data={**print_data, "using_tools": using_tools}, status="inner", current=task_id)
+                now_node = new_tree_node
+
             self.need_for_plan_refine = need_for_plan_refine
-
-            now_attempt_tree.make_father_relation(now_node, new_tree_node)
-
-            await task_handler.interaction.update_cache(update_data={**print_data, "using_tools": using_tools}, status="inner", current=task_id)
-
-            now_node = new_tree_node
 
             if tool_output_status_code == ToolCallStatusCode.SUBMIT_AS_SUCCESS:
 
