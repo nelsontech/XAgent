@@ -1,13 +1,10 @@
 import abc
 import yaml
 import json
-import time
-import requests
 from colorama import Fore, Style
-from XAgent.utils import ToolCallStatusCode
+from XAgent.data_structure.node import ToolNode
+from XAgent.agent.summarize import summarize_action,summarize_plan
 from XAgent.loggers.logs import logger
-from XAgent.tool_call_handle import unwrap_tool_response
-from XAgent.running_recorder import recorder
 
 
 class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
@@ -41,6 +38,7 @@ class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
         self.tool_jsons = {}
         for tool_json in tool_jsons:
             self.tool_jsons[tool_json["name"]] = tool_json["parameters"]["required"]
+        self.workflow_json = self.make_function_call_json()
         
     def __str__(self) -> str:
         return self.workflow_config.workflow_name
@@ -48,59 +46,30 @@ class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
     def status(self):
         return self.status
 
-    def exec_single_node(self, command_name, arguments):
-        command_result, tool_output_status_code, = self.toolserver_interface.execute_command_client(
-            command_name,
-            arguments,
-        )
-        """
-        Basicall copy from XAgent/tool_call_handler.py, function handle_tool_call.
-        """
-        
-        MAX_RETRY = 10
-        retry_time = 0
-        while retry_time<MAX_RETRY and tool_output_status_code == ToolCallStatusCode.TIMEOUT_ERROR and isinstance(command_result['detail'],dict) and 'type' in command_result['detail'] and command_result['detail']['type']=='retry':
-            time.sleep(3)
-            retry_time += 1
-            command_result, tool_output_status_code, = self.toolserver_interface.execute_command_client(
-                command_result['detail']['next_calling'],
-                command_result['detail']['arguments'],
-            )
+    def make_function_call_json(self):
+        workflow_json = {
+            "name": self.workflow_config["name"],
+            "description": self.workflow_config["description"],
+            "parameters": self.workflow_config["parameters"]
+        }
+        return workflow_json
 
-        if tool_output_status_code == ToolCallStatusCode.TIMEOUT_ERROR and retry_time==MAX_RETRY:
-            command_result = "Timeout and no content returned! Please check the content you submit!"
-
-        if tool_output_status_code==ToolCallStatusCode.TOOL_CALL_SUCCESS:
-            command_result = self.long_result_summary({'name':command_name,'arguments':arguments},command_result)
-
-        result = f"Command {command_name} returned: " + f"{command_result}"
-
-        # node.workspace_hash_id = output_hash_id
-        if result is not None:
-            logger.typewriter_log("SYSTEM: ", Fore.YELLOW, result)
+    def make_procedure_node(self, procedure, input_parameters):
+        procedure_node = ToolNode()
+        procedure_node.data["content"] = f"Executing procedure {procedure}."
+        procedure_node.data["command"]["properties"]["name"] = procedure
+        procedure_node.data["command"]["properties"]["args"] = input_parameters
+        return procedure_node
+    
+    def summary_actions(self, now_node: ToolNode, now_dealing_task):
+        action_process = now_node.process
+        if self.config.enable_summary:
+            terminal_task_info = summarize_plan(
+                now_dealing_task.to_json())
         else:
-            logger.typewriter_log(
-                "SYSTEM: ", Fore.YELLOW, "Unable to execute command"
-            )
-
-        if tool_output_status_code == ToolCallStatusCode.TOOL_CALL_SUCCESS:
-            color = Fore.GREEN
-        elif tool_output_status_code == ToolCallStatusCode.SUBMIT_AS_SUCCESS:
-            color = Fore.YELLOW
-        elif tool_output_status_code == ToolCallStatusCode.SUBMIT_AS_FAILED:
-            color = Fore.BLUE
-        else:
-            color = Fore.RED
-
-        logger.typewriter_log(
-            "TOOL STATUS CODE: ", Fore.YELLOW, f"{color}{tool_output_status_code.name}{Style.RESET_ALL}"
-        )
-
-        recorder.regist_tool_call(
-            tool_name = command_name,
-            tool_input = arguments,
-            tool_output = command_result,
-            tool_status_code = tool_output_status_code.name
-        )
-
-        return command_result, tool_output_status_code
+            terminal_task_info = json.dumps(
+                now_dealing_task.to_json(), indent=2, ensure_ascii=False)
+        if self.config.enable_summary:
+            action_process = summarize_action(
+                action_process, terminal_task_info)
+        return action_process
