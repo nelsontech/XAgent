@@ -2,27 +2,34 @@ import abc
 import yaml
 import json
 from colorama import Fore, Style
+from XAgent.config import XAgentConfig
+from XAgent.tool_call_handle import ToolServerInterface
 from XAgent.data_structure.node import ToolNode
 from XAgent.agent.summarize import summarize_action,summarize_plan
 from XAgent.loggers.logs import logger
 
 
 class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
-    def __init__(self, workflow_yml, config, tool_jsons, toolserver_interface):
+    def __init__(self, 
+            workflow_yml: str | dict, 
+            config: XAgentConfig, 
+            tool_jsons: list, 
+            toolserver_interface: ToolServerInterface
+        ):
         """
         Initializes the BaseInnerWorkFlow class with necessary configurations.
         
         Parameters:
-        - workflow_yml (str): Path to the YAML file that contains the pre-defined workflow.
+        - workflow_yml (str or dict): Path to the YAML file or a dict that contains the pre-defined workflow.
                              This file outlines the structure and sequence of the workflow steps.
                              
-        - config (Config): Global configuration object of XAgent. This object contains 
+        - config (XAgentConfig): Global configuration object of XAgent. This object contains 
                            necessary configurations that are essential for executing workflows.
                            
         - tool_jsons (list): A list containing JSON objects. Each JSON object holds the 
                              necessary information required for function calls to the available tools.
                              
-        - toolserver_interface (object): An instance of the toolserver, which is initialized 
+        - toolserver_interface (ToolServerInterface): An instance of the toolserver, which is initialized 
                                          in main.py. This interface facilitates interactions 
                                          with the toolserver during workflow execution.                          
         """
@@ -32,7 +39,7 @@ class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
             self.__class__.__name__,
         )
         self.config = config
-        self.workflow_config = yaml.load(open(workflow_yml), Loader=yaml.Loader)
+        self.workflow_config = (yaml.load(open(workflow_yml), Loader=yaml.Loader) if isinstance(workflow_yml, str) else workflow_yml)
         self.toolserver_interface = toolserver_interface
         self.procedures = self.workflow_config["procedures"]
         self.tool_jsons = {}
@@ -41,10 +48,7 @@ class BaseInnerWorkFlow(metaclass = abc.ABCMeta):
         self.workflow_json = self.make_function_call_json()
         
     def __str__(self) -> str:
-        return self.workflow_config.workflow_name
-
-    def status(self):
-        return self.status
+        return self.workflow_config["name"]
 
     def make_function_call_json(self):
         workflow_json = {
