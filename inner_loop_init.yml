@@ -1,0 +1,26 @@
+topk: 5
+namespace: "inner_loop_workflow_test"
+
+use_predefined: true
+predefined_workflow: 
+  workflow_1:
+    name: "information_collection"
+    description: Given a topic, search information online and write summary information into a file.
+    parameters: 
+      type: object
+      properties:
+        goals_to_browse:
+          type: "string"
+          description: "The goal to collect information"
+        search_query:
+          type: "string"
+          description: "The query to collect information"
+        filepath:
+          type: "string"
+          description: "Filepath to save the collected information at last"
+      required: ["goals_to_browse", "search_query", "filepath"]
+    procedures:
+      - name: "WebEnv_search_and_browse"
+        legacy: "content"
+      - name: "FileSystemEnv_write_to_file"
+        legacy: "none"
