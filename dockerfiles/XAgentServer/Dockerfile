@@ -7,7 +7,7 @@ COPY XAgentWeb .
 RUN npm run build
 
 
-FROM python:3.10 AS XAgentServer
+FROM python:3.10.6 AS XAgentServer
 EXPOSE 8090
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 RUN apt-get update --fix-missing
