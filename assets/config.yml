@@ -3,20 +3,6 @@ api_keys:
     - api_key: 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
       organization: org-Wn3HDR9yFia3IieArXP92YW5
       model: gpt-3.5-turbo-16k
-  gpt-4:    
-    - api_key: sk-xxxxx
-      organization: org-xxxxx
-      model: gpt-4
-    - api_key: sk-xxxxx
-      organization: org-xxxxxx
-      model: gpt-4
-  gpt-4-32k:
-    - api_key: sk-xxxxx
-      organization: org-xxxxx
-      model: gpt-4-32k
-    - api_key: sk-xxxxx
-      organization: org-xxxxxx
-      model: gpt-4-32k
 
 
 default_request_type: openai # or xagent
